@@ -11,7 +11,7 @@ where \(\alpha, \beta, \delta, \gamma > 0\) are parameters controlling the growt
 In our code, these equations are used to model the population dynamics of prey \(x\) and predator \(y\).
 
 The main parameters of the StackedResPINN are :
-- T_max = 15.0s
+- T_max = 17.0s
 - \alpha, \beta, \delta, \gamma = np.array([1.1, 0.4, 0.4, 0.1])
 - n_stacked_mf_layers = 2
 - u_0 = [2.0, 1.0]
