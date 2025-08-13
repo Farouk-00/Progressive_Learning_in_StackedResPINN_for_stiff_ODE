@@ -208,7 +208,7 @@ def l2_relative_error(u_pred, u_true, eps=1e-12):
 
 # Define the Stacked PINN class with modifications to store losses
 class StackedResPINN:
-    def __init__(self, model, optimizer_primal, optimizer_dual, lr_scheduler=None, patience=100, patience_gamma=1000, N_collocation=1000, N_resample=50, N_dual=10, gammas_init=[], parameters_init=50.0, logger=None, T_max=1):
+    def __init__(self, model, optimizer_primal, optimizer_dual, lr_scheduler=None, patience=100, patience_gamma=100, N_collocation=1000, N_resample=50, N_dual=10, gammas_init=[], parameters_init=50.0, logger=None, T_max=1):
         self.model = model
         self.optimizer_primal = optimizer_primal
         self.optimizer_dual = optimizer_dual
