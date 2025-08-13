@@ -492,7 +492,7 @@ class StackedResPINN:
 
                     # early stopping check
                     if tf.reduce_mean(tf.square(self.gammas - self.old_gammas)) > 1.0e-2:
-                        self.old_gammas = self.gammas
+                        self.old_gammas = self.gammas.numpy().copy()
                         self.bad_epochs_gamma = 0
                     else:
                         self.bad_epochs_gamma += 1
