@@ -476,7 +476,7 @@ class StackedResPINN:
                     self.bad_epochs = 0
                 else:
                     print("all stacks converged, updating gammas")
-                    self.update_gammas(smoothing_coef=0.1, t=t_collocation)
+                    self.update_gammas(smoothing_coef=0.05, t=t_collocation)
                     if self.epsilon <= 1.0e-1:
                         self.epsilon.assign(self.epsilon * 10.0)
                     self.K = 0
