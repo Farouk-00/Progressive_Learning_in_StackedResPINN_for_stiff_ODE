@@ -469,7 +469,6 @@ class StackedResPINN:
 
             if (self.bad_epochs >= self.patience and self.omegas_t[self.K][-1] > 0.9) or self.bad_epochs >= 2000:
                 self.best_loss = 0.0
-                print(f"self.omegas_t[self.K][-1] : {self.omegas_t[self.K][-1]}, loss.numpy() : {loss.numpy()}")
                 if self.K < self.n_stacked_layers-1 and self.bad_epochs < 1000:
                     print(f"stack {self.K} has converged, passing to the next stack")
                     self.K += 1
