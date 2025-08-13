@@ -244,7 +244,7 @@ class StackedResPINN:
 
         # initialize the sequence alpha and the sitffness sigma of each stack
         self.gammas = tf.Variable(initial_value=gammas_init, trainable=False)
-        self.old_gammas = self.gammas # for early stopping check
+        self.old_gammas = self.gammas.numpy().copy() # for early stopping check
         self.sigma = tf.Variable(initial_value= (-1.0e-3) * tf.ones([self.n_stacked_layers], dtype=tf.float32),trainable=False)
 
     def resample(self):
