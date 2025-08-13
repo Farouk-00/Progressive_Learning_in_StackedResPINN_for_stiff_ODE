@@ -595,7 +595,7 @@ class StackedResPINN:
 # %%
 if __name__ == "__main__":
     # Parameters
-    T_max = 15.0
+    T_max = 17.0
     parameters_init = np.array([1.1, 0.4, 0.4, 0.1])
     n_stacked_mf_layers = 0
     u_0 = [2.0, 1.0]
