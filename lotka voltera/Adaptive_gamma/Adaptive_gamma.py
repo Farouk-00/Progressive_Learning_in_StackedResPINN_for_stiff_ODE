@@ -635,7 +635,7 @@ class StackedResPINN:
 # %%
 if __name__ == "__main__":
     # Parameters
-    T_max = 15.0
+    T_max = 17.0
     parameters_init = np.array([1.1, 0.4, 0.4, 0.1])
     n_stacked_mf_layers = 2
     u_0 = [2.0, 1.0]
@@ -678,7 +678,7 @@ if __name__ == "__main__":
     pinn = StackedResPINN(model, optimizer_primal, optimizer_dual, gammas_init=gammas_init, T_max=T_max, parameters_init=parameters_init)
 
     # Train the model with test data for loss visualization
-    pinn.train(t_collocation, n_stacked_mf_layers, epochs=300000, t_test=t_test, u_test=u_tests, u_0=u_0)
+    pinn.train(t_collocation, n_stacked_mf_layers, epochs=200000, t_test=t_test, u_test=u_tests, u_0=u_0)
 
 
 
