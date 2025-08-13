@@ -13,3 +13,5 @@ The main parameters of the StackedResPINN are:
 - u_0 = 0.0
 - h_sf_sizes = [40, 40, 40]
 - h_res_sizes = [40, 40, 40]
+
+As the stiffness indicator is constant equals to -\mu, the sequence (\gamma_i) is constant equal to (i+1)/(N+1), and then there is no difference between the adaptive_gamma and constant_gamma versions of the Stacked Residual PINN.
