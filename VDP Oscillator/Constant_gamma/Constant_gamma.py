@@ -635,7 +635,7 @@ if __name__ == "__main__":
     # Parameters
     T_max = 3.0
     real_mu = 4.0
-    n_stacked_mf_layers = 3
+    n_stacked_mf_layers = 2
     u_0=[1.0, 0.0]
     insize = 1  # Input size (t)
     outsize = 2  # Output size (u)
