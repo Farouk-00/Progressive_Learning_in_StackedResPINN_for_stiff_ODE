@@ -1,4 +1,4 @@
-The three PINNs aim at approximating the Lotka-Volterra predator-prey model. The Lotka-Volterra equations describe the interaction between two species as:
+The four PINNs aim at approximating the Lotka-Volterra predator-prey model. The Lotka-Volterra equations describe the interaction between two species as:
 
 \[
 \begin{cases}
