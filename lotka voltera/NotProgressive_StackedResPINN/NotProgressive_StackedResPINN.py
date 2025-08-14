@@ -1,0 +1,585 @@
+# %%
+import numpy as np
+import matplotlib.pyplot as plt
+import tensorflow as tf
+
+# %%
+class MLP(tf.Module):
+    """
+    Multi-Layer Perceptron (MLP) class with regularization handling.
+
+    --------------
+    insize: input size (int)
+    outsize: output size (int)
+    hsize: A list specifying the number of neurons in each hidden layer (list of ints).
+    bias: Boolean indicating whether to include a bias term in the linear layers (default: True)
+    nonlin: The activation function to be used in the hidden layers (default: nn.Tanh).
+    linear_map:  The type of linear transformation to be used (default: nn.Linear)
+    """
+    def __init__(self, insize, outsize, hsizes, bias=True, nonlin=tf.tanh, linear_map=tf.keras.layers.Dense):
+        super().__init__()
+        self.in_features, self.out_features = insize, outsize
+        self.nhidden = len(hsizes)
+        self.layers = []
+        self.nonlin = []
+        self.seed = 123
+        # Create linear layers and activation functions
+        layer_sizes = [insize] + hsizes + [outsize]
+        for k in range(len(layer_sizes) - 1):
+            initializer = tf.keras.initializers.GlorotUniform(self.seed+k)
+            self.layers.append(linear_map(units=layer_sizes[k+1], use_bias=bias, kernel_initializer=initializer))
+            if k < self.nhidden:
+                self.nonlin.append(nonlin)
+            else:
+                self.nonlin.append(tf.identity)
+
+    def __call__(self, x):
+        for i in range(len(self.layers)):
+            x = self.nonlin[i](self.layers[i](x))
+        return x
+
+    def reg_error(self):
+        """
+        Compute the regularization error for the linear layers that support it.
+        """
+        reg_loss = 0.0
+        for layer in self.layers:
+            if hasattr(layer, "reg_error"):
+                reg_loss += layer.reg_error()
+        return reg_loss
+
+
+# %%
+class ResNetBlock(tf.Module):
+    """
+    A single ResNet block that takes the current output (from the previous layer or from the single-fidelity model)
+    and the original input x, and learns a residual mapping.
+
+    The block computes:
+    out_new = out_old + alpha * F(x)
+
+    F is implemented by an MLP.
+    """
+    def __init__(self, in_dim_x, in_dim_out, hres_sizes=[20, 20], bias=True, nonlin=tf.tanh):
+        """
+        in_dim_x : int, dimension of input x
+        in_dim_out : int, dimension of the output (u)
+        hres_sizes : list of ints, hidden layer sizes for the residual MLP
+        bias : bool, whether to include bias in MLP layers
+        nonlin : activation function class (e.g., nn.Tanh)
+        """
+        super().__init__()
+        self.res_mlp = MLP(in_dim_x, in_dim_out, hsizes=hres_sizes, bias=bias, nonlin=nonlin)
+
+    def __call__(self, x, out_old, alpha):
+        """
+        Forward pass of the ResNet block.
+
+        x: tensor of shape (N, in_dim_x)
+        out_old: tensor of shape (N, in_dim_out)
+        alpha: scalar parameter controlling the amplitude of the residual update.
+
+        return: out_new = out_old + alpha * F(x)
+        """
+        residual = self.res_mlp(x)
+        out_new = out_old + tf.abs(alpha) * residual
+        return out_new
+
+# Define the Stacked MLP class for Stacked PINN with ResNet blocks
+class StackedMLP(tf.Module):
+    """
+    Stacked Multi-Layer Perceptron designed for multi-fidelity learning where multiple layers are
+    stacked to refine the prediction progressively. Now, each stacked layer is a ResNet block.
+    """
+    def __init__(
+        self,
+        insize,
+        outsize,
+        h_sf_sizes=[20, 20], # The single fidelity hidden size
+        n_stacked_mf_layers=3,
+        # The residual block hidden sizes for each stacked layer
+        h_res_sizes=[20,20,20],
+        bias=True,
+        nonlin=tf.tanh,
+        alpha_init=0.1,
+        u_initial=None
+    ):
+        super().__init__()
+        self.insize = insize
+        self.outsize = outsize
+        self.h_sf_sizes = h_sf_sizes
+        self.n_stacked_mf_layers = n_stacked_mf_layers
+        self.h_res_sizes = h_res_sizes
+        self.bias = bias
+        self.nonlin = nonlin
+        self.alpha_init = alpha_init
+        
+        if u_initial is None:
+            self.u0 = tf.zeros(shape=(outsize, 1), dtype=tf.float32)
+        else:
+            self.u0 = u_initial
+
+        # Initial single-fidelity MLP
+        self.first_layer = MLP(insize, outsize, hsizes=h_sf_sizes, bias=bias, nonlin=nonlin)
+
+        # Alpha parameters, one per stacked layer
+        self.alpha = [tf.Variable(0.0, trainable=True)] + [tf.Variable(alpha_init, trainable=True) for _ in range(n_stacked_mf_layers)]
+
+        # Considering each stacked layer as a ResNet block
+        self.layers = []
+        for _ in range(n_stacked_mf_layers):
+            res_block = ResNetBlock(insize, outsize, hres_sizes=self.h_res_sizes, bias=bias, nonlin=nonlin)
+            self.layers.append(res_block)
+
+    def __call__(self, x, i=None):
+        if i is None:
+            i = self.n_stacked_mf_layers
+        i = min(i, self.n_stacked_mf_layers)
+
+        # First layer (single-fidelity MLP)
+        out = self.first_layer(x)
+        out_old = tf.zeros_like(out)
+        residual = out
+        
+        # Apply stacked ResNet blocks up to layer i
+        for j in range(i):
+            alpha = self.alpha[j+1]
+            layer = self.layers[j]
+            # Each layer: out = out + alpha * res_mlp(x)
+            out_old = out
+            out = layer(x, out_old, alpha)
+            residual = out - out_old
+        #return out_new, out_old, and residual
+        return self.u0 + tf.tanh(x) * out, self.u0 + tf.tanh(x) * out_old, tf.tanh(x) * residual
+
+    def get_alpha_loss(self, i=None):
+        """
+        Retrieve the accumulated loss from alpha parameters used for regularization purposes.
+
+        :return: Alpha loss as a torch scalar.
+        """
+        return tf.pow(self.alpha[i], 4)
+
+# Numerical solution for the Lotka–Volterra equation
+def analytical_solution(n_steps, T_max=30.0, parameters_init=[1.1, 0.4, 0.4, 0.1], u_0=[10.0, 5.0]):
+    """
+    Numerical solution of the Lotka–Volterra model using RK4.
+
+    Arguments:
+    - n_steps: number of time steps
+    - T_max  : final time
+    - alpha, beta, gamma, delta: model parameters
+
+    Returns:
+    - x: trajectory (n_steps, 2), prey and predator populations
+    - t: time (n_steps,)
+    """
+    alpha, beta, gamma, delta = parameters_init
+    dt = T_max / float(n_steps)
+    t = np.arange(0, n_steps * dt, dt)
+    x = np.zeros((n_steps, 2))
+    x[0, :] = u_0  # conditions initiales
+
+    def lv_rhs(t, z):
+        x1, x2 = z
+        dx1 = alpha * x1 - beta * x1 * x2
+        dx2 = delta * x1 * x2 - gamma * x2
+        return np.array([dx1, dx2])
+
+    for i in range(n_steps - 1):
+        k1 = lv_rhs(t[i], x[i])
+        k2 = lv_rhs(t[i] + dt/2, x[i] + dt/2 * k1)
+        k3 = lv_rhs(t[i] + dt/2, x[i] + dt/2 * k2)
+        k4 = lv_rhs(t[i] + dt, x[i] + dt * k3)
+        x[i+1] = x[i] + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+
+    return tf.convert_to_tensor(x, dtype=tf.float32), tf.convert_to_tensor(t, dtype=tf.float32)
+
+# Define the L2 relative error function
+def l2_relative_error(u_pred, u_true):
+    """
+    Compute L2 relative error between predicted values and true values.
+
+    Parameters:
+    u_pred (Tensor): Predicted values (model output)
+    u_true (Tensor): True values (ground truth)
+
+    Returns:
+    float: L2 relative error
+    """
+    error = tf.norm(u_pred - u_true, ord=2) / tf.norm(u_true, ord=2)
+    return error.numpy().item()
+
+# Define the Stacked PINN class with modifications to store losses
+class StackedResPINN:
+    def __init__(self, model, optimizer_primal, optimizer_dual, lr_scheduler=None, patience=100, N_collocation=1000, N_resample=50, N_dual=10, gammas_init=[], parameters_init=[1.1, 0.4, 0.4, 0.1], logger=None, T_max=2.0):
+        self.model = model
+        self.optimizer_primal = optimizer_primal
+        self.optimizer_dual = optimizer_dual
+        self.lr_scheduler = lr_scheduler
+        self.logger = logger
+        self.n_stacked_layers = model.n_stacked_mf_layers+1  # Number of stacked layers (Using for averaging loss) +1 for vanilla layer 0
+        self.N_phys = N_collocation
+        self.N_resample = N_resample
+        self.N_dual = N_dual
+        # Early stopping attributes
+        self.patience = patience
+        self.best_loss = float("inf")
+        self.bad_epochs = 0
+
+        self.T_max = T_max
+        self.weight = tf.Variable(1.0, dtype=tf.float32)
+        self.parameters = parameters_init
+        self.alpha, self.beta, self.gamma, self.delta = self.parameters
+
+        self.epsilon = tf.Variable(1.0e-2, dtype=tf.float32, trainable=False)
+        self.omegas_t = tf.Variable(tf.zeros((self.n_stacked_layers, N_collocation), dtype=tf.float32), trainable=False)
+
+        self.gammas = tf.Variable(initial_value=gammas_init, trainable=False)
+
+
+    def resample(self):
+        t_collocation = tf.random.uniform(shape=(self.N_phys, 1), minval=0, maxval=self.T_max)
+        return t_collocation
+
+
+    #############################       LOSS       ############################
+
+    def f(self, u1, u2, alpha_i):
+        term1 = alpha_i * (self.alpha*u1 - self.beta*u1*u2)
+        term2 = alpha_i * (self.delta*u1*u2 - self.gamma*u2)
+        return [term1, term2]
+
+    def loss_function(self, t):
+        """
+        loss function to compute the residual loss of stack k
+            - k is the index of the stack currently being optimized
+        """
+        losses = []
+        omegas_t = []
+        inp = t
+
+        for i in range(self.n_stacked_layers):
+            if i ==0:
+                with tf.GradientTape(watch_accessed_variables=False) as tape1:
+                    tape1.watch(inp)
+                    U, _, _ = self.model(inp, i=i)
+                U_t = tape1.batch_jacobian(U, inp)
+                u1 = U[:, 0:1]
+                u2 = U[:, 1:2]
+                
+                f = tf.squeeze(U_t, axis=2) - tf.concat(self.f(u1, u2, self.gammas[i]), axis=1)
+
+            else:
+                with tf.GradientTape(watch_accessed_variables=False) as tape1:
+                    tape1.watch(inp)
+                    U, U_old, R = self.model(inp, i=i)
+                R_t = tape1.batch_jacobian(R, inp)
+                u1 = U[:, 0:1]
+                u2 = U[:, 1:2]
+                u1_old = U_old[:, 0:1]
+                u2_old = U_old[:, 1:2]
+                
+                f = tf.squeeze(R_t, axis=2) - tf.concat(self.f(u1, u2, self.gammas[i]), axis=1) + tf.concat(self.f(u1_old, u2_old, self.gammas[i-1]), axis=1)
+            
+            f_squared = tf.square(f)
+            f_squared_sum = tf.reduce_sum(f_squared, axis=1, keepdims=True)
+            f_squared_cumsum = tf.cumsum(f_squared_sum, exclusive=True)
+            omega_t = tf.stop_gradient(tf.exp(-self.epsilon * f_squared_cumsum))
+            weighted_f_squared = omega_t * f_squared
+            
+            ode_i = self.weight * tf.reduce_mean(weighted_f_squared) + self.model.get_alpha_loss(i=i)
+
+            omegas_t.append(omega_t)
+            losses.append(ode_i)
+
+        self.omegas_t.assign(tf.squeeze(tf.stack(omegas_t, axis=0), axis=-1))
+
+        return losses
+    
+    @tf.function
+    def total_loss(self, t_collocation):
+        physics_loss = self.loss_function(t_collocation)
+        return sum(physics_loss)
+
+    @tf.function
+    def primal_update(self, t_collocation):
+        with tf.GradientTape() as loss_tape:
+            loss = self.total_loss(t_collocation)
+        grads = loss_tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer_primal.apply_gradients(zip(grads, self.model.trainable_variables))
+        return loss
+    
+    @tf.function
+    def dual_update(self, t_collocation):
+        with tf.GradientTape(watch_accessed_variables=False) as loss_tape:
+            loss_tape.watch(self.weight)
+            loss = -self.total_loss(t_collocation)
+        grads = loss_tape.gradient(loss, [self.weight])
+        self.optimizer_dual.apply_gradients(
+            zip(grads, [self.weight])
+        )
+        return -loss
+
+
+    #############################       TRAIN       ############################
+
+    def train(self, t_collocation, n_stacked_mf_layers, epochs=1000, t_test=None, u_test=None, u_0=[10.0, 5.0]):
+    
+        train_losses, test_losses, l2_errors, omegas_t, lambda_phys = ([] for _ in range(5))
+
+        for epoch in range(epochs):
+
+            loss = self.primal_update(t_collocation)
+            if epoch % self.N_dual == 0 and epoch > 0: #dual update
+                loss = self.dual_update(t_collocation)
+            if epoch % self.N_resample == 0 and epoch > 0: #resampling of t_collocation
+                t_collocation = self.resample()
+
+            # Learning rate scheduling if type ReduceLROnPlateau
+            if self.lr_scheduler:
+                if hasattr(self.lr_scheduler, 'on_epoch_end'):
+                    self.lr_scheduler.on_epoch_end(epoch=None, logs={"loss": loss.numpy()})
+        
+            # Logging
+            if self.logger:
+                self.logger.log_metrics({"loss": loss.numpy()}, step=epoch)    
+             
+            train_losses.append(loss.numpy())
+            omegas_t.append(self.omegas_t.numpy().copy())
+            lambda_phys.append(self.weight.numpy().copy())
+
+            if epoch % 100 == 0 or epoch == epochs-1:
+                # Calculate test loss if test data is provided
+                if t_test is not None and u_test is not None:
+
+                    u_pred_test = []
+                    for i in range(self.model.n_stacked_mf_layers+1):
+                        u_i, _, _ = self.model(t_test, i)
+                        u_pred_test.append(u_i)
+                    test_loss = [tf.reduce_mean(tf.square(u_pred_test_i - u_test_i)).numpy() for u_pred_test_i, u_test_i  in zip(u_pred_test, u_test)]
+                    test_losses.append(test_loss)
+
+                    # Compute L2 relative error
+                    l2_error = [l2_relative_error(u_pred_test_i, u_test_i) for u_pred_test_i, u_test_i in zip(u_pred_test, u_test)]
+                    l2_errors.append(l2_error)
+
+                print(f"Epoch {epoch}, Loss: {loss.numpy():.4e}, L2 Relative_error: {[f'{err:.4f}' for err in l2_error]}, self.gammas: {[f'{gamma:.4f}' for gamma in self.gammas.numpy()]}, epsilon : {self.epsilon.numpy():.1e}, lambda_phys : {self.weight.numpy():.4f}")
+
+        # Plot losses
+        plt.figure(figsize=(10, 5))
+        plt.plot(train_losses, label="Training Loss")
+        if test_losses:
+            # test_losses is a list of lists, one per epoch. Plotting the mean test loss across layers.
+            mean_test_losses = [np.mean(tl) for tl in test_losses]
+            plt.plot(mean_test_losses, label="Test Loss", color="orange")
+        plt.xlabel("Epochs")
+        plt.ylabel("Loss")
+        plt.title("Training and Test Loss")
+        plt.legend()
+        plt.grid(True)
+        plt.savefig("losses over epochs.eps", format='eps')
+        plt.show()
+
+         # Plot L2 relative error over epochs
+        if l2_errors:  # Check if l2_errors is not empty
+            plt.figure()
+            plt.plot(range(len(l2_errors)), l2_errors, label=[f"L2 Relative Error{i}" for i in range (n_stacked_mf_layers+1)])
+            plt.xlabel("Epochs")
+            plt.ylabel("L2 Relative Error")
+            plt.title("L2 Relative Error over Training Epochs")
+            plt.yscale("log")
+            plt.legend()
+            plt.grid(True)
+            plt.savefig("L2 relative error over epochs.eps", format='eps')
+            plt.show()
+
+        # plot final output vs analytical solution
+        t_test = tf.reshape(t_test, [-1]).numpy()
+        sorted_indices = np.argsort(t_test)
+        t_sorted = t_test[sorted_indices]
+        
+        u_pred_np = u_pred_test[-1].numpy()
+        u_sorted = u_pred_np[sorted_indices]
+        u_true_np = u_test[-1].numpy()
+        u_true_sorted = u_true_np[sorted_indices]
+
+        plt.figure(figsize=(10, 4))
+        plt.subplot(3, 1, 1)
+        plt.plot(t_sorted, u_sorted[:, 0], label='x_hat1')
+        plt.plot(t_sorted, u_true_sorted[:, 0], label='x1')
+        plt.xlabel("Time")
+        plt.ylabel("State")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+        plt.figure(figsize=(10, 4))
+        plt.subplot(3, 1, 2)
+        plt.plot(t_sorted, u_sorted[:, 1], label='x_hat2')
+        plt.plot(t_sorted, u_true_sorted[:, 1], label='x2')
+        plt.xlabel("Time")
+        plt.ylabel("State")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+        # Plot lambda_phys over epochs
+        plt.figure()
+        plt.plot(range(len(lambda_phys)), lambda_phys, label="lambda_phys")
+        plt.xlabel("Epochs")
+        plt.ylabel(f"lambda_phys values")
+        plt.title("lambda_phys over Training Epochs")
+        plt.grid(True)
+        plt.legend()
+        plt.savefig("lambda_phys over epochs.eps", format='eps')
+        plt.show()
+
+# %%
+if __name__ == "__main__":
+    # Parameters
+    T_max = 17.0
+    parameters_init = np.array([1.1, 0.4, 0.4, 0.1])
+    n_stacked_mf_layers = 2
+    u_0 = [2.0, 1.0]
+    insize = 1  # Input size (t)
+    outsize = 2  # Output size (u)
+    h_sf_sizes = [40, 40, 40]
+    # Residual block hidden sizes
+    h_res_sizes = [40, 40, 40]
+    gammas_init = []
+    
+    for i in range(n_stacked_mf_layers+1):
+        gammas_init.append((i+1)/(n_stacked_mf_layers+1))
+    print(f'gammas_init : {gammas_init}')
+
+    # Initial condition
+    N_initial = 1
+    t_initial = tf.zeros(shape=(N_initial, 1), dtype=tf.float32)
+    u_initial = tf.convert_to_tensor([u_0] * N_initial, dtype=tf.float32)
+
+    # Create model
+    model = StackedMLP(insize, outsize, h_sf_sizes=h_sf_sizes, h_res_sizes=h_res_sizes,
+                       n_stacked_mf_layers=n_stacked_mf_layers, alpha_init=0.05, u_initial=u_initial)
+
+    optimizer_primal = tf.keras.optimizers.legacy.Adam(learning_rate=1e-3)
+    optimizer_dual = tf.keras.optimizers.legacy.Adam(learning_rate=1e-3)
+
+    # Test points (optional for validation/testing)
+    n_steps = int(5e3)
+    u_tests = []
+    for i in range(n_stacked_mf_layers+1):
+        u_test, t_test = analytical_solution(n_steps, T_max=T_max, parameters_init=gammas_init[i]*parameters_init, u_0=u_0)
+        u_tests.append(u_test)
+    t_test = tf.reshape(t_test, (-1, 1))
+
+    # Create collocation points
+    N_collocation = 1000
+    t_collocation = tf.random.uniform(shape=(N_collocation, 1), minval=0, maxval=T_max)
+
+    # Create instance of Stacked Residual PINN
+    pinn = StackedResPINN(model, optimizer_primal, optimizer_dual, gammas_init=gammas_init, T_max=T_max, parameters_init=parameters_init)
+
+    # Train the model with test data for loss visualization
+    pinn.train(t_collocation, n_stacked_mf_layers, epochs=200000, t_test=t_test, u_test=u_tests, u_0=u_0)
+
+
+
+
+# %%
+for idx,alpha_val in enumerate(model.alpha):
+    print(f"alpha_{idx} = {alpha_val}")
+
+
+# %%
+u_pred_test, _, _ = model(t_test)
+u_true_test = u_tests[-1]
+absolute_error = tf.abs(u_pred_test - u_true_test).numpy()
+
+plt.figure(figsize=(8, 6))
+plt.hist(absolute_error, bins=30, alpha=0.75, label=["x1", "x2"], edgecolor='black')
+plt.xlabel("Absolute Error")
+plt.ylabel("Frequency")
+plt.title("Distribution of Absolute Errors")
+plt.legend()
+plt.grid(True)
+plt.savefig("distribution_absolute_errors_vanilla_pinn.eps", format='eps')
+plt.show()
+
+
+# %%
+plt.figure(figsize=(6, 4))
+plt.boxplot(absolute_error, tick_labels=["x1", "x2"], vert=True)
+plt.ylabel('Absolute Error')
+plt.title('Error Boxplot')
+plt.grid(True)
+plt.savefig('error_boxplot_curriculum_stacked_pinn.eps', format='eps')
+plt.show()
+
+
+# %%
+"""
+Plot the comparison of the output of each stack with the solution it tries to approximate
+"""
+# get the analytical solution each stack tries to approximate
+n_steps = int(5e3)
+u_tests = []
+for i in range(n_stacked_mf_layers+1):
+    u_test, t_test = analytical_solution(n_steps, T_max=T_max, parameters_init=pinn.gammas[i]*parameters_init, u_0=u_0)
+    u_tests.append(u_test)
+t_test = tf.reshape(t_test, (-1, 1))
+
+u_approx = []
+r_approx = []
+u_old_approx = []
+u_true = []
+t_test_np =tf.reshape(t_test, [-1]).numpy()
+sorted_indices = np.argsort(t_test_np)
+t_sorted = t_test_np[sorted_indices]
+
+# get the output of each stack and plot it
+for i in range(n_stacked_mf_layers+1):
+    u_i, u_old, r_i  = model(t_test, i=i)
+    
+    u_i_np = u_i.numpy()
+    u_i_sorted = u_i_np[sorted_indices]
+    u_approx.append(u_i_sorted)
+    
+    r_i_np = r_i.numpy()
+    r_i_sorted = r_i_np[sorted_indices]
+    r_approx.append(r_i_sorted)
+
+    u_old_np = u_old.numpy()
+    u_old_sorted = u_old_np[sorted_indices]
+    u_old_approx.append(u_old_sorted)
+
+    u_true_i_np = u_tests[i].numpy()
+    u_true_i_sorted = u_true_i_np[sorted_indices]
+    u_true.append(u_true_i_sorted)
+
+    plt.figure(figsize=(10, 4))
+
+    plt.subplot(2, 1, 1)
+    plt.plot(t_sorted, u_i_sorted[:, 0], label=f'x_hat1_{i}')
+    plt.plot(t_sorted, u_true_i_sorted[:, 0], linestyle='--', linewidth=1, label=f'x1_{i}')
+    plt.plot(t_sorted, r_i_sorted[:, 0], linewidth=1, label=f'r_hat1_{i}', color='#A0A0A0')
+    plt.plot(t_sorted, u_old_sorted[:, 0], linewidth=1.5, label=f'x_old_hat1_{i}', color='#AAAAAA')
+    plt.xlabel("Time")
+    plt.ylabel("State")
+    plt.title(f"u_approx_{i} vs u_test_{i}")
+    plt.legend()
+    plt.grid(True)
+
+    plt.subplot(2, 1, 2)
+    plt.plot(t_sorted, u_i_sorted[:, 1], label=f'x_hat2_{i}')
+    plt.plot(t_sorted, u_true_i_sorted[:, 1], linestyle='--', linewidth=1, label=f'x2_{i}')
+    plt.plot(t_sorted, r_i_sorted[:, 1], linewidth=1, label=f'r_hat2_{i}', color='#A0A0A0')
+    plt.plot(t_sorted, u_old_sorted[:, 1], linewidth=1.5, label=f'x_old_hat2_{i}', color='#AAAAAA')
+    plt.xlabel("Time")
+    plt.ylabel("State")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"u_approx_{i} vs u_test_{i}.eps", format='eps')
+    plt.show()
+
+
