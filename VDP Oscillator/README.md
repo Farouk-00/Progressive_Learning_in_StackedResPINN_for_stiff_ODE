@@ -1,4 +1,4 @@
-The three PINN aim at approximating the Van Der Poll Oscillator equation.
+The four PINN aim at approximating the Van Der Poll Oscillator equation.
 The Van der Pol equation is a nonlinear oscillator model described by:
 
 \[
