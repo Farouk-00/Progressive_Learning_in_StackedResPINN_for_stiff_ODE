@@ -18,7 +18,7 @@ In our code, it is written as a first-order system:
 The main parameters of the StackedResPINN are:
 - T_max = 3.0
 - mu = 4.0
-- n_stacked_mf_layers = 3
+- n_stacked_mf_layers = 2
 - u_0=[1.0, 0.0]
 - h_sf_sizes = [40, 40, 40]
 - h_res_sizes = [40, 40, 40]
