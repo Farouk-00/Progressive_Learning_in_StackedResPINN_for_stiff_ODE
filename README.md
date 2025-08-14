@@ -5,6 +5,7 @@ The repo has 3 repositories for three different exemples of Progressive Learning
 
 Each repository has three codes to test the efficiency of the method :
   - One Vanilla PINN
+  - One classic Stacked Residual PINN as developped by Matthieu Barreau and Katayoun Eshkofti
   - And two stacked residual PINNs implemented with the Progressive Learning methodology
         • The first with adaptive gammas (the method the efficiency of which we want to prove)
         • The second one with constant gammas 
