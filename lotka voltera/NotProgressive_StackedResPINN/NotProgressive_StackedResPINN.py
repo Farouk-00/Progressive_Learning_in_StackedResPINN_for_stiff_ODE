@@ -444,9 +444,9 @@ if __name__ == "__main__":
     u_0 = [2.0, 1.0]
     insize = 1  # Input size (t)
     outsize = 2  # Output size (u)
-    h_sf_sizes = [40, 40, 40]
+    h_sf_sizes = [50, 50, 50]
     # Residual block hidden sizes
-    h_res_sizes = [40, 40, 40]
+    h_res_sizes = [50, 50, 50]
     gammas_init = []
     
     for i in range(n_stacked_mf_layers+1):
